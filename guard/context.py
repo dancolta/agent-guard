@@ -1,20 +1,21 @@
-"""Shared helpers for the claude-guard hooks.
+"""Session context and small cross-platform string/path helpers.
 
-Resolves a human-readable description of the session that triggered a hook:
-Desktop-app session title (when available), working folder and the first
-user request from the transcript. Never raises; every lookup degrades to "".
+Never raises; every lookup degrades to "". Works for both Claude Code and
+Codex CLI hook payloads (they share session_id / tool_name / tool_input /
+cwd / transcript_path on stdin).
 """
 import glob
 import json
 import os
 import re
-import subprocess
 import unicodedata
 
 HOME = os.path.expanduser("~")
-SESS_DIR = os.path.join(HOME, "Library", "Application Support", "Claude", "claude-code-sessions")
-MAX_SESSION_FILE = 2_000_000  # bytes; skip anything bigger
-SID_RE = re.compile(r"(?!\.{1,2}$)[A-Za-z0-9_.-]{1,128}")
+# Claude Desktop stores session titles here; absent for Codex/CLI, degrades to "".
+CLAUDE_SESS_DIR = os.path.join(
+    HOME, "Library", "Application Support", "Claude", "claude-code-sessions")
+MAX_SESSION_FILE = 2_000_000
+SID_RE = re.compile(r"(?!\.{1,2}$)[A-Za-z0-9_.\-]{1,128}")
 
 
 def valid_sid(sid):
@@ -22,11 +23,10 @@ def valid_sid(sid):
 
 
 def session_title(sid):
-    """Title the Claude Desktop app assigned to this CLI session, or ""."""
-    if not valid_sid(sid):
+    if not valid_sid(sid) or not os.path.isdir(CLAUDE_SESS_DIR):
         return ""
     try:
-        for f in glob.glob(os.path.join(SESS_DIR, "*", "*", "*.json")):
+        for f in glob.glob(os.path.join(CLAUDE_SESS_DIR, "*", "*", "*.json")):
             try:
                 if os.path.getsize(f) > MAX_SESSION_FILE:
                     continue
@@ -45,7 +45,6 @@ def session_title(sid):
 
 
 def first_prompt(transcript_path, limit=140):
-    """First human message in the session transcript, whitespace-collapsed."""
     if not transcript_path or not str(transcript_path).endswith(".jsonl"):
         return ""
     try:
@@ -81,44 +80,25 @@ def describe(data):
     return "\n".join(lines)
 
 
-def dialog_safe(text, limit=900):
-    """Make text safe to embed inside an AppleScript string literal."""
+def clean_text(text, limit=900):
+    """Strip control chars; cap length. Dialog back-ends do their own escaping."""
     text = str(text).replace("\x00", "")
-    return text.replace("\\", "/").replace('"', "'")[:limit]
+    text = "".join(ch for ch in text if ch >= " " or ch in "\n\t")
+    return text[:limit]
 
 
-def run_applescript(script, timeout=None, detach=False):
-    """Run AppleScript from stdin so its text never appears in `ps` output.
-
-    Returns stdout (str) when not detached, "" otherwise. Never raises.
-    """
-    try:
-        if detach:
-            p = subprocess.Popen(["/usr/bin/osascript", "-"], stdin=subprocess.PIPE,
-                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                 start_new_session=True)
-            p.stdin.write(script.encode("utf-8"))
-            p.stdin.close()
-            return ""
-        r = subprocess.run(["/usr/bin/osascript", "-"], input=script, capture_output=True,
-                           text=True, timeout=timeout)
-        return r.stdout
-    except Exception:
-        return ""
+def _norm(p, base, resolve):
+    p = os.path.expanduser(str(p))
+    if not os.path.isabs(p):
+        p = os.path.join(base or os.getcwd(), p)
+    p = os.path.realpath(p) if resolve else os.path.normpath(p)
+    p = unicodedata.normalize("NFC", p)
+    return os.path.normcase(p)  # case-folds on Windows/macOS, no-op on Linux
 
 
 def norm_path(p, base=None):
-    """Absolute, unicode-normalised, case-folded path (no symlink resolution)."""
-    p = os.path.expanduser(str(p))
-    if not os.path.isabs(p):
-        p = os.path.join(base or os.getcwd(), p)
-    p = os.path.normpath(p)
-    return unicodedata.normalize("NFC", p).casefold()
+    return _norm(p, base, resolve=False)
 
 
 def real_path(p, base=None):
-    """Like norm_path but with symlinks resolved."""
-    p = os.path.expanduser(str(p))
-    if not os.path.isabs(p):
-        p = os.path.join(base or os.getcwd(), p)
-    return unicodedata.normalize("NFC", os.path.realpath(p)).casefold()
+    return _norm(p, base, resolve=True)

