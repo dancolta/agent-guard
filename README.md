@@ -10,24 +10,29 @@ It does three things:
    from using `sudo`, Keychain or AppleScript, and from flipping their own
    permission mode or connectors. Deny beats allow in every mode, including
    auto and bypass.
-2. **Guard dialog.** Changing scheduled tasks (persistence) triggers one macOS
-   dialog per session showing who is asking and what changes. Allow covers that
-   session for 30 minutes. A poisoned web page can type a magic phrase; it
-   cannot click a native dialog.
+2. **Guard dialog.** Anything that creates persistence (scheduled tasks,
+   launch agents, shell rc files, `~/.claude/commands` and `agents`, the
+   guard's own state) triggers one macOS dialog per session showing who is
+   asking and what changes. Allow covers that session for 30 minutes. It
+   watches the file tools, the scheduled-task MCP tools and Bash command text.
 3. **Exfil alarm.** When the auto-mode classifier denies a command that looks
-   like data exfiltration (network tool + secret path, or an encode-and-pipe),
-   the session freezes and a red dialog shows session title, folder, original
-   request and the exact command, with an Unfreeze button. Nothing is logged.
+   like data exfiltration (network sink + secret path, or an encode-and-pipe
+   into a network sink), the session freezes and a red dialog shows session
+   title, folder, original request and the exact command, with an Unfreeze
+   button.
 
-No prompts are added to normal work. Sessions stay in `auto` mode; the only new
-interaction is the guard dialog, and only when an agent touches scheduled tasks.
+No prompts are added to normal work. Sessions stay in `auto` mode; the only
+new interaction is the guard dialog, and only when an agent touches
+persistence.
 
 ## Requirements
 
 - macOS (uses `osascript` dialogs and the login Keychain)
 - Claude Code with `permissions.defaultMode: "auto"` (the alarm listens to the
-  classifier's `PermissionDenied` event; in other modes it simply never fires)
-- Python 3, already present on macOS
+  classifier's `PermissionDenied` event; in other modes it never fires, the
+  never list and guard dialog still work)
+- Python 3.6+ on PATH or Command Line Tools installed. The installer records
+  the absolute interpreter path, so later PATH changes don't matter.
 
 ## Install
 
@@ -41,23 +46,38 @@ Run it yourself in a terminal, not through an agent. After install, agents
 cannot edit `~/.claude/settings.json` or `~/.claude/hooks/`, so any future
 change to the guard also has to come from you. Restart open sessions.
 
-`install.py` copies the hooks to `~/.claude/hooks/claude-guard/`, registers
-them, merges `deny.json` into your deny list without duplicates, turns on
+`install.py` copies the hooks to `~/.claude/hooks/claude-guard/` and locks them
+with `chflags uchg`, registers them with an absolute interpreter path, merges
+`deny.json` into your deny list without duplicates, turns on
 `autoMode.classifyAllShell` so no allow rule skips the classifier, and backs up
-`settings.json` next to itself.
+`settings.json` when it changes. Removal (`python3 install.py --uninstall`)
+drops only the rules it added.
 
-Remove everything with `python3 install.py --uninstall`.
+## Honest limits
 
-## What it does not do
-
-- It does not sandbox Bash. Pair it with Claude Code's built-in sandbox
-  (`sandbox.enabled`) for network and filesystem containment.
-- It does not see inside scripts. A deny on `Bash(security:*)` stops the
-  literal command, not a Python subprocess. That is what the classifier and the
-  sandbox are for.
-- It does not cover MCP servers' own network access.
-- It is not a substitute for running untrusted-content pipelines under a
-  separate macOS user account.
+- **Same uid.** Hooks, deny rules and the Keychain grant all live in the same
+  user account as the agent. They stop prompt-injected *tool calls*; a shell
+  the agent already runs can, in principle, forge the grant with
+  `/usr/bin/security` or overwrite the hook after `chflags nouchg`. Both are
+  denied by rule and flagged by the Bash tripwire, so the classifier sees
+  them; they are not physically impossible. Real containment is Claude Code's
+  sandbox (`sandbox.enabled`) or a separate macOS user for untrusted pipelines.
+- **Text, not semantics.** A deny on `Bash(security:*)` stops the literal
+  command, not a Python subprocess. The classifier and sandbox cover that.
+- **Freeze stops tool calls, not running processes.** A background job
+  started before the freeze keeps running.
+- **Dialogs can be clicked by GUI automation.** `mcp__computer-use__*` is
+  denied for that reason; keep other GUI-automation tools out of agent reach.
+- **Skills are not guarded** (`~/.claude/skills`). Unattended tasks commonly
+  write there. A scheduled task that invokes a skill executes whatever that
+  skill says, so treat skill edits as persistence and review them.
+- **Fail-closed by design.** If the hook crashes, its interpreter is missing
+  or its state dir is tampered with, the circuit breaker blocks and says so.
+  A headless session (ssh, no GUI) gets no dialog: guarded actions are denied,
+  and a freeze is cleared with `rm ~/.claude/guard/frozen/<session_id>`.
+- **Nothing is logged.** While a session is frozen, its flag file
+  (`0600`) holds the blocked command so the dialog can show it; the dialog
+  text is passed to `osascript` over stdin, not argv.
 
 ## Files
 
@@ -65,19 +85,21 @@ Remove everything with `python3 install.py --uninstall`.
 |---|---|
 | `hooks/circuit_breaker.py` | PreToolUse, matcher `*`: freeze check + guard dialog |
 | `hooks/exfil_alarm.py` | PermissionDenied, matcher `*`: exfil heuristic + alarm dialog |
-| `hooks/guardctx.py` | session title / folder / first request lookup |
+| `hooks/guardctx.py` | context lookup, AppleScript helper, path normalisation |
 | `deny.json` | the never list, edit before installing |
 | `install.py` | idempotent installer and uninstaller |
 
-State lives only in `~/.claude/guard/frozen/<session_id>` while a session is
-frozen, and in a Keychain item `claude-guard-unlock` while a grant is active.
+State: `~/.claude/guard/frozen/<session_id>` while frozen; a Keychain item
+`claude-guard-unlock` per granted session (30 min).
 
 ## Tuning
 
-- Guarded paths and tools: `GUARDED_DIRS`, `GUARDED_TOOLS` in `circuit_breaker.py`.
+- Guarded paths, tools and Bash patterns: `GUARDED_DIRS`, `GUARDED_TOOLS`,
+  `BASH_TRIPWIRE` in `circuit_breaker.py`.
 - Grant length: `GRANT_SECONDS`. Dialog timeout: `DIALOG_SECONDS` (unattended
   sessions get an automatic deny when it expires).
-- Exfil heuristic: `NET`, `SECRETS`, `ENCODE_PIPE` in `exfil_alarm.py`.
+- Exfil heuristic: `NET`, `SECRETS`, `ENCODE_PIPE`, `MCP_SECRET_PATH` in
+  `exfil_alarm.py`.
 
 ## License
 
