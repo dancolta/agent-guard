@@ -27,6 +27,19 @@ FROZEN_DIR = os.path.join(GUARD_DIR, "frozen")
 DIALOG_SECONDS = 120
 
 
+def _runtime():
+    """claude (default) relies on the built-in classifier for exfil, so this
+    hook only inline-freezes on unambiguous egress. codex has no classifier, so
+    it also inline-detects interpreter-based exfil."""
+    argv = sys.argv
+    if "--runtime" in argv:
+        try:
+            return argv[argv.index("--runtime") + 1]
+        except IndexError:
+            pass
+    return "claude"
+
+
 def _frozen_state(sid):
     if not os.path.lexists(GUARD_DIR):
         return "ok"
@@ -111,7 +124,7 @@ def run():
         return 2
 
     # 3. exfil shape -> freeze
-    is_exfil, shown = policy.exfil(tool, tin)
+    is_exfil, shown = policy.exfil(tool, tin, include_interp=(_runtime() == "codex"))
     if is_exfil:
         if valid_sid(sid):
             _freeze_and_alarm(sid, tool, shown, data)

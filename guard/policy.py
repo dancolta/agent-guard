@@ -72,6 +72,11 @@ ENCODE_PIPE = re.compile(
 LOCAL_URL = re.compile(
     r"\b(curl|wget|iwr|Invoke-WebRequest|Invoke-RestMethod)\b[^|;&]*?"
     r"(https?://)?(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(:\d+)?\S*", re.I)
+# In-process / test HTTP clients are not network egress; never treat as a sink.
+TEST_CLIENT = re.compile(
+    r"test_utils|TestClient|TestServer|ASGITransport|WSGITransport|"
+    r"starlette\.testclient|\.test_client\(|app\.test_client|"
+    r"httpx\.ASGI|unittest\.mock|pytest|responses\.|requests_mock|respx", re.I)
 SSH_KEYTOOLS = re.compile(r"\s*ssh-(keygen|add|copy-id|agent)\b")
 # Reading THESE out is never part of normal dev, so a plain read is blocked.
 # Note: .env / .npmrc / .gitconfig are deliberately NOT here — they are read
@@ -120,17 +125,27 @@ def _slashes(s):
     return str(s).replace("\\", "/")
 
 
-def exfil(tool, tin):
-    """Return (bool, shown_text)."""
+def exfil(tool, tin, include_interp=True):
+    """Return (bool, shown_text).
+
+    include_interp=False (used on Claude, where the built-in classifier already
+    judges exfil) only freezes on unambiguous egress: curl/scp/nc/git-push +
+    secret, or encode|network-pipe. include_interp=True (Codex, no classifier)
+    also counts an inline interpreter that imports a real network library, but
+    never an in-process test client.
+    """
     text = _dump(tin)
     if tool in SHELL_TOOLS:
         cmd = str(tin.get("command", ""))
         if SSH_KEYTOOLS.match(cmd):
             return False, cmd
+        if ENCODE_PIPE.search(cmd):
+            return True, cmd
         stripped = LOCAL_URL.sub(" ", cmd)
-        net = NET.search(stripped) or INTERP_NET.search(cmd)
-        return (bool(net and SECRETS.search(_slashes(cmd)))
-                or bool(ENCODE_PIPE.search(cmd))), cmd
+        net = bool(NET.search(stripped))
+        if not net and include_interp and not TEST_CLIENT.search(cmd):
+            net = bool(INTERP_NET.search(cmd))
+        return bool(net and SECRETS.search(_slashes(cmd))), cmd
     if tool.startswith("mcp__") or tool == "WebFetch":
         return (SECRETS.search(_slashes(text)) is not None and len(text) > 40), text
     return False, text

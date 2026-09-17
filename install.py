@@ -76,12 +76,12 @@ def claude_install():
 
     def ours(e):
         return any("agent-guard" in str(h.get("command", "")) for h in e.get("hooks", []))
-    entry = lambda s, t: {"matcher": "*", "hooks": [  # noqa: E731
-        {"type": "command", "command": hook_cmd(dest, s), "timeout": t}]}
+    entry = lambda cmd, t: {"matcher": "*", "hooks": [  # noqa: E731
+        {"type": "command", "command": cmd, "timeout": t}]}
     hooks["PreToolUse"] = [e for e in hooks.get("PreToolUse", []) if not ours(e)]
-    hooks["PreToolUse"].append(entry("circuit_breaker.py", 150))
+    hooks["PreToolUse"].append(entry(hook_cmd(dest, "circuit_breaker.py") + " --runtime claude", 150))
     hooks["PermissionDenied"] = [e for e in hooks.get("PermissionDenied", []) if not ours(e)]
-    hooks["PermissionDenied"].append(entry("exfil_alarm.py", 20))
+    hooks["PermissionDenied"].append(entry(hook_cmd(dest, "exfil_alarm.py"), 20))
 
     with open(os.path.join(HERE, "deny.json"), encoding="utf-8") as f:
         wanted = json.load(f)["deny"]
@@ -108,9 +108,11 @@ def codex_install():
     dest = os.path.join(cfg, "hooks", "agent-guard")
     copy_pkg(dest)
     hj = os.path.join(cfg, "hooks", "agent-guard.hooks.json")
-    handler = {"type": "command", "command": hook_cmd(dest, "circuit_breaker.py"),
+    handler = {"type": "command",
+               "command": hook_cmd(dest, "circuit_breaker.py") + " --runtime codex",
                "timeout": 150}
-    handler["commandWindows"] = f'"{PY}" -B "{os.path.join(dest, "circuit_breaker.py")}"'
+    handler["commandWindows"] = (
+        f'"{PY}" -B "{os.path.join(dest, "circuit_breaker.py")}" --runtime codex')
     doc = {"description": "agent-guard: block exfil, reads of secrets, and "
            "unapproved persistence changes",
            "hooks": {"PreToolUse": [{"matcher": "*", "hooks": [handler]}]}}
