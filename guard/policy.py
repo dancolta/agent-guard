@@ -77,10 +77,17 @@ SECRETS_STRICT = re.compile(
     r"\.config/gh/|\.aws/|\.kube/|\.config/gcloud/|\.docker/config\.json|\.git-credentials|\.netrc|"
     r"Library/(Cookies|Keychains|Messages)/|AppData.*(Login Data|Cookies)|"
     r"chrome-profile|/Cookies\b|Login Data|security find-)", re.I)
-# Bash file-read verbs that would exfiltrate a secret by reading it out.
-READ_VERB = re.compile(
+# A file-read verb whose argument (same command segment) is a strict secret.
+# Verb-adjacent so an unrelated mention (e.g. a git commit message) is ignored.
+READ_SECRET = re.compile(
     r"\b(cat|bat|less|more|head|tail|sed|awk|grep|rg|strings|xxd|od|hexdump|"
-    r"cp|scp|rsync|tar|zip|dd|sqlite3|plutil|defaults read|Get-Content|gc|type)\b", re.I)
+    r"cp|scp|rsync|tar|dd|sqlite3|plutil|defaults read|Get-Content|gc)\b"
+    r"[^|;&\n`]{0,80}?"
+    r"(\.ssh/|id_rsa|id_ed25519|id_ecdsa|\.pem\b|\.p12\b|\.claude\.json|\.mcp\.json|"
+    r"\.codex/auth|\.credentials\.json|\.claude/projects/|\.config/gh/|\.aws/|\.kube/|"
+    r"\.config/gcloud/|\.docker/config\.json|\.git-credentials|\.netrc|"
+    r"Library/(Cookies|Keychains|Messages)/|AppData[^|;&\n]*?(Login Data|Cookies)|"
+    r"chrome-profile|/Cookies\b|Login Data|security find-)", re.I)
 
 _GN = [norm_path(d) + os.sep for d in GUARDED_DIRS]
 _GR = [real_path(d) + os.sep for d in GUARDED_DIRS]
@@ -129,8 +136,7 @@ def secret_read(tool, tin):
         p = str(tin.get("file_path") or tin.get("path") or "")
         return SECRETS_STRICT.search(_slashes(p)) is not None
     if tool in SHELL_TOOLS:
-        cmd = str(tin.get("command", ""))
-        return bool(READ_VERB.search(cmd) and SECRETS_STRICT.search(_slashes(cmd)))
+        return READ_SECRET.search(_slashes(str(tin.get("command", "")))) is not None
     return False
 
 
