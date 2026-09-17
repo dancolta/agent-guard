@@ -33,14 +33,17 @@ FILE_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit", "apply_patch"}
 SHELL_TOOLS = {"Bash", "shell", "PowerShell", "Monitor"}
 READ_TOOLS = {"Read"}
 
-# Bash text that reaches persistence or the guard/agent config itself.
+# Bash text that reaches persistence. Path patterns are anchored to the user's
+# HOME so a project's own ./.claude/ (which most repos have) is never guarded;
+# command patterns (crontab, launchctl, ...) match anywhere.
+_HP = r"(?:" + re.escape(HOME) + r"|~|\$HOME|\$\{HOME\})"
 BASH_PERSIST = re.compile(
-    r"(scheduled-tasks|LaunchAgents|LaunchDaemons|\bcrontab\b|"
-    r"schtasks|Register-ScheduledTask|New-Service|"
+    r"(\bcrontab\b|\bschtasks\b|Register-ScheduledTask|New-Service|"
     r"launchctl\s+(bootstrap|load|submit|enable)|"
-    r"\.(claude|codex)/(hooks|guard|commands|agents|prompts)\b|"
-    r"\.(zshrc|zprofile|zshenv|bashrc|bash_profile|profile)\b|PowerShell.*profile|"
-    r"agent-guard-unlock|add-generic-password|chflags\s+nouchg|chattr\s+-i)", re.I)
+    r"agent-guard-unlock|add-generic-password|chflags\s+nouchg|chattr\s+-i|"
+    + _HP + r"/Library/(LaunchAgents|LaunchDaemons)\b|"
+    + _HP + r"/\.(claude|codex)/(hooks|guard|commands|agents|prompts|scheduled-tasks)\b|"
+    + _HP + r"/\.(zshrc|zprofile|zshenv|bashrc|bash_profile|profile)\b)", re.I)
 
 # --- exfil heuristic: a network sink AND a secret, or an encode->network pipe ---
 _W = r"(?![\w-])"
@@ -64,6 +67,16 @@ LOCAL_URL = re.compile(
     r"\b(curl|wget|iwr|Invoke-WebRequest|Invoke-RestMethod)\b[^|;&]*?"
     r"(https?://)?(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(:\d+)?\S*", re.I)
 SSH_KEYTOOLS = re.compile(r"\s*ssh-(keygen|add|copy-id|agent)\b")
+# Reading THESE out is never part of normal dev, so a plain read is blocked.
+# Note: .env / .npmrc / .gitconfig are deliberately NOT here — they are read
+# constantly during development. They still trip the exfil check (SECRETS) when
+# piped to a network sink.
+SECRETS_STRICT = re.compile(
+    r"(\.ssh/|id_rsa|id_ed25519|id_ecdsa|\.pem\b|\.p12\b|"
+    r"\.claude\.json|\.mcp\.json|\.codex/auth|\.credentials\.json|\.claude/projects/|"
+    r"\.config/gh/|\.aws/|\.kube/|\.config/gcloud/|\.docker/config\.json|\.git-credentials|\.netrc|"
+    r"Library/(Cookies|Keychains|Messages)/|AppData.*(Login Data|Cookies)|"
+    r"chrome-profile|/Cookies\b|Login Data|security find-)", re.I)
 # Bash file-read verbs that would exfiltrate a secret by reading it out.
 READ_VERB = re.compile(
     r"\b(cat|bat|less|more|head|tail|sed|awk|grep|rg|strings|xxd|od|hexdump|"
@@ -114,10 +127,10 @@ def secret_read(tool, tin):
     runtime has no path deny list of its own (Codex)."""
     if tool in READ_TOOLS:
         p = str(tin.get("file_path") or tin.get("path") or "")
-        return SECRETS.search(_slashes(p)) is not None
+        return SECRETS_STRICT.search(_slashes(p)) is not None
     if tool in SHELL_TOOLS:
         cmd = str(tin.get("command", ""))
-        return bool(READ_VERB.search(cmd) and SECRETS.search(_slashes(cmd)))
+        return bool(READ_VERB.search(cmd) and SECRETS_STRICT.search(_slashes(cmd)))
     return False
 
 
