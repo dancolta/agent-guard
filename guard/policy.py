@@ -51,8 +51,14 @@ NET = re.compile(
     r"(\b(curl|wget|nc|ncat|socat|ssh|scp|sftp|rsync|telnet|s3cmd|gsutil|lftp)" + _W + r"|"
     r"\bopenssl s_client|/dev/tcp/|Invoke-WebRequest|Invoke-RestMethod|\biwr\b|\bcurl\.exe|"
     r"\bgit push\b|\bgh (gist|release) (create|upload)\b|"
-    r"\baws s3 (cp|sync|mv)\b|\bgcloud storage\b|\baz storage\b|"
-    r"\bpython3?\s+(-c\s*|-\s|<<)|\bnode\s+-e\b|\bphp -r\b|\bruby -e\b|\bperl -e\b)", re.S)
+    r"\baws s3 (cp|sync|mv)\b|\bgcloud storage\b|\baz storage\b)", re.S)
+# An inline interpreter counts as a network sink ONLY when its code actually
+# touches the network, so ordinary `python3 -c` / `node -e` dev work is ignored.
+INTERP_NET = re.compile(
+    r"\b(python3?\s+(-c|-\s|<<)|node\s+-e|php -r|ruby -e|perl -e|deno (eval|run))\b"
+    r".{0,300}?"
+    r"(socket|urllib|urlopen|requests\.|http\.client|httpx|aiohttp|https?://|"
+    r"fetch\(|net\.|axios|Net::HTTP|LWP|file_get_contents|curl_)", re.I | re.S)
 SECRETS = re.compile(
     r"(\.ssh/|\.claude\.json|\.mcp\.json|\.codex/auth|\.credentials\.json|\.claude/projects/|"
     r"\.config/gh/|\.aws/|\.kube/|\.config/gcloud/|\.docker/config\.json|"
@@ -122,7 +128,8 @@ def exfil(tool, tin):
         if SSH_KEYTOOLS.match(cmd):
             return False, cmd
         stripped = LOCAL_URL.sub(" ", cmd)
-        return (bool(NET.search(stripped) and SECRETS.search(_slashes(cmd)))
+        net = NET.search(stripped) or INTERP_NET.search(cmd)
+        return (bool(net and SECRETS.search(_slashes(cmd)))
                 or bool(ENCODE_PIPE.search(cmd))), cmd
     if tool.startswith("mcp__") or tool == "WebFetch":
         return (SECRETS.search(_slashes(text)) is not None and len(text) > 40), text
