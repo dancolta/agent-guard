@@ -5,9 +5,6 @@ Works with **Claude Code** and **Codex CLI**, on **macOS, Linux and Windows**.
 
 ![agent-guard demo](assets/demo.gif)
 
-> Repo is still named `claude-guard` (that's the URL); the tool itself is
-> agent-neutral.
-
 ## Why not just the defaults?
 
 Both runtimes can auto-approve tool calls so agents run unattended. Neither, on
@@ -43,8 +40,8 @@ exfil detection itself instead of waiting for a classifier verdict.
 ## Install
 
 ```bash
-git clone https://github.com/dancolta/claude-guard
-cd claude-guard
+git clone https://github.com/dancolta/agent-guard
+cd agent-guard
 python3 install.py            # auto-detects ~/.claude and ~/.codex
 ```
 
